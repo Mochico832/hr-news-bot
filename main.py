@@ -27,7 +27,9 @@ def main():
     print("=== HR News Bot: RSS test ===")
 
     for company in COMPANIES:
-        url = google_news_rss_url(f'"{company}" 人事 OR 異動 OR 就任 OR 退任')
+        url = google_news_rss_url(
+    f'("{company}") (人事 OR 異動 OR 就任 OR 退任 OR 昇進 OR 役員 OR 社長 OR 任命 OR 発令 '
+    f'OR appointment OR appointed OR resignation OR resigned OR promotion OR executive)')
         print(f"\n--- {company} ---")
         print(url)
 
