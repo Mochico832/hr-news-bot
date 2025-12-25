@@ -2,7 +2,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -14,69 +14,66 @@ COMPANIES = [
     "Mimaki",
 ]
 
-# 人事っぽいキーワード（タイトル＋概要の両方に当てる）
+# 人事っぽいキーワード（タイトル＋概要に当てる）
 HR_KEYWORDS = [
     "人事", "異動", "就任", "退任", "昇進", "新任", "任命", "発令",
     "役員", "社長", "取締役", "執行役員", "CEO", "CFO", "COO",
-    "appointment", "appointed", "resignation", "resigned", "promotion", "executive"
+    "appointment", "appointed", "resignation", "resigned",
+    "promotion", "executive"
 ]
 
-# ノイズになりがちな単語（多いなら増やす）
+# ノイズになりがちな単語
 NOISE_KEYWORDS = [
-    "決算", "業績", "売上", "株価", "新製品", "キャンペーン", "広告", "インタビュー",
+    "決算", "業績", "売上", "株価", "新製品",
+    "キャンペーン", "広告", "インタビュー",
 ]
 
 def google_news_rss_url(company: str) -> str:
-    # 会社名 + 人事ワード（広めに取って、後段でフィルタするのが安全）
     query = (
         f'("{company}") ('
         f'人事 OR 異動 OR 就任 OR 退任 OR 昇進 OR 役員 OR 社長 OR 任命 OR 発令 '
-        f'OR appointment OR appointed OR resignation OR resigned OR promotion OR executive)'
+        f'OR appointment OR appointed OR resignation OR resigned '
+        f'OR promotion OR executive)'
     )
     q = urllib.parse.quote(query)
     return f"https://news.google.com/rss/search?q={q}&hl=ja&gl=JP&ceid=JP:ja"
 
 def is_hr_text(text: str) -> bool:
     t = (text or "").lower()
-    # 人事キーワードが1つでも含まれる
     has_hr = any(k.lower() in t for k in HR_KEYWORDS)
-    # ノイズワードが多い場合は弾く（必要ならOFFでもOK）
     has_noise = any(k.lower() in t for k in NOISE_KEYWORDS)
     return has_hr and not has_noise
 
-def parse_pubdate_to_jst_date(pubdate_text: str):
-    # RSSのpubDateは "Tue, 26 Dec 2025 01:23:00 GMT" みたいな形式が多い
+def parse_pubdate_to_jst(pubdate_text: str):
     if not pubdate_text:
         return None
     dt = parsedate_to_datetime(pubdate_text)
     if dt.tzinfo is None:
-        # 念のためUTC扱い
         dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-    return dt.astimezone(JST).date()
+    return dt.astimezone(JST)
 
-def fetch_rss_items(url: str, limit: int = 30):
+def fetch_rss_items(url: str, limit: int = 50):
     with urllib.request.urlopen(url, timeout=20) as r:
         xml_bytes = r.read()
 
     root = ET.fromstring(xml_bytes)
     items = []
     for item in root.findall(".//item")[:limit]:
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        pubdate = (item.findtext("pubDate") or "").strip()
-        desc = (item.findtext("description") or "").strip()
         items.append({
-            "title": title,
-            "link": link,
-            "pubDate": pubdate,
-            "description": desc,
+            "title": (item.findtext("title") or "").strip(),
+            "link": (item.findtext("link") or "").strip(),
+            "pubDate": (item.findtext("pubDate") or "").strip(),
+            "description": (item.findtext("description") or "").strip(),
         })
     return items
 
 def main():
-    today_jst = datetime.now(JST).date()
-    print(f"=== HR News Bot: today only (JST) ===")
-    print(f"Today(JST): {today_jst}")
+    now_jst = datetime.now(JST)
+    since = now_jst - timedelta(hours=24)
+
+    print("=== HR News Bot: last 24 hours ===")
+    print(f"Now (JST): {now_jst}")
+    print(f"Since (JST): {since}")
 
     for company in COMPANIES:
         url = google_news_rss_url(company)
@@ -85,28 +82,31 @@ def main():
 
         try:
             items = fetch_rss_items(url, limit=50)
+            recent_hr_items = []
 
-            # 今日(JST)だけ
-            today_items = []
             for it in items:
-                d = parse_pubdate_to_jst_date(it["pubDate"])
-                if d == today_jst:
-                    today_items.append(it)
+                pub_jst = parse_pubdate_to_jst(it["pubDate"])
+                if not pub_jst:
+                    continue
 
-            # さらに「人事っぽい」ものだけ（タイトル＋概要で判定）
-            filtered = []
-            for it in today_items:
+                # 直近24時間
+                if pub_jst < since:
+                    continue
+
+                # 人事っぽさ判定（タイトル＋概要）
                 text = it["title"] + " " + it["description"]
                 if is_hr_text(text):
-                    filtered.append(it)
+                    recent_hr_items.append((pub_jst, it))
 
-            if not filtered:
-                print("No HR-like results for today (filtered).")
+            if not recent_hr_items:
+                print("No HR-like results in last 24 hours.")
                 continue
 
-            for i, it in enumerate(filtered, 1):
-                d = parse_pubdate_to_jst_date(it["pubDate"])
-                print(f"{i}. [{d}] {it['title']}")
+            # 新しい順に並べる
+            recent_hr_items.sort(key=lambda x: x[0], reverse=True)
+
+            for i, (d, it) in enumerate(recent_hr_items, 1):
+                print(f"{i}. [{d.strftime('%Y-%m-%d %H:%M')}] {it['title']}")
                 print(f"   {it['link']}")
 
         except Exception as e:
