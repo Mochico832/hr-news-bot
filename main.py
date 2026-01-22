@@ -91,6 +91,11 @@ def send_mail_sendgrid(subject: str, body: str):
     mail_from = os.environ.get("MAIL_FROM")
     mail_to = os.environ.get("MAIL_TO")
 
+print("ENV CHECK:",
+      "SENDGRID_API_KEY=", bool(os.environ.get("SENDGRID_API_KEY")),
+      "MAIL_FROM=", bool(os.environ.get("MAIL_FROM")),
+      "MAIL_TO=", bool(os.environ.get("MAIL_TO")))
+
     if not api_key or not mail_from or not mail_to:
         print("SendGrid secrets are missing. Skip sending email.")
         return
