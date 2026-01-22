@@ -124,7 +124,7 @@ def send_mail_sendgrid(subject: str, body: str):
 
 def main():
     now_jst = datetime.now(JST)
-    since = now_jst - timedelta(hours=24)
+    since = now_jst - timedelta(days=180)
 
     # 前回までに見たURL
     seen = load_seen_links()
