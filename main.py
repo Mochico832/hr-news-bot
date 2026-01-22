@@ -20,20 +20,26 @@ COMPANIES = [
 # 人事っぽいキーワード（タイトル＋概要に当てる）
 HR_KEYWORDS = [
     "人事", "異動", "就任", "退任", "昇進", "新任", "任命", "発令",
-    "役員", "社長", "取締役", "執行役員", "CEO", "CFO", "COO",
-    "appointment", "appointed", "resignation", "resigned",
-    "promotion", "executive"
+    "役員", "社長", "取締役", "執行役員",
+    "CEO", "CFO", "COO",
+    "appointment", "appointed",
+    "resignation", "resigned",
+    "promotion", "executive",
 ]
 
 # ノイズになりがちな単語（多いなら増やす）
 NOISE_KEYWORDS = [
-    "決算", "業績", "売上", "株価", "新製品",
-    "キャンペーン", "広告", "インタビュー",
+    "決算", "業績", "売上", "株価",
+    "新製品", "キャンペーン", "広告", "インタビュー",
 ]
 
 # 前回までに見たURLを保存するファイル（URL単位で重複除外）
 SEEN_FILE = Path("seen_links.txt")
-MAX_SEEN = 2000  # 記憶が増えすぎないよう上限
+MAX_SEEN = 5000  # 半年に広げると増えるので少し多め
+
+# 検索期間：半年（180日）
+LOOKBACK_DAYS = 180
+
 
 def load_seen_links() -> set[str]:
     if not SEEN_FILE.exists():
@@ -41,27 +47,32 @@ def load_seen_links() -> set[str]:
     lines = SEEN_FILE.read_text(encoding="utf-8").splitlines()
     return set(line.strip() for line in lines if line.strip())
 
+
 def save_seen_links(seen: set[str]):
     links = sorted(seen)
     if len(links) > MAX_SEEN:
         links = links[-MAX_SEEN:]
     SEEN_FILE.write_text("\n".join(links) + "\n", encoding="utf-8")
 
+
 def google_news_rss_url(company: str) -> str:
+    # 人事系に寄せた検索（日本語＋英語）
     query = (
         f'("{company}") ('
-        f'人事 OR 異動 OR 就任 OR 退任 OR 昇進 OR 役員 OR 社長 OR 任命 OR 発令 '
-        f'OR appointment OR appointed OR resignation OR resigned '
-        f'OR promotion OR executive)'
+        f'人事 OR 異動 OR 就任 OR 退任 OR 昇進 OR 新任 OR 任命 OR 発令 '
+        f'OR 役員 OR 社長 OR 取締役 OR 執行役員 '
+        f'OR appointment OR appointed OR resignation OR resigned OR promotion OR executive)'
     )
     q = urllib.parse.quote(query)
     return f"https://news.google.com/rss/search?q={q}&hl=ja&gl=JP&ceid=JP:ja"
+
 
 def is_hr_text(text: str) -> bool:
     t = (text or "").lower()
     has_hr = any(k.lower() in t for k in HR_KEYWORDS)
     has_noise = any(k.lower() in t for k in NOISE_KEYWORDS)
     return has_hr and not has_noise
+
 
 def parse_pubdate_to_jst(pubdate_text: str):
     if not pubdate_text:
@@ -71,8 +82,9 @@ def parse_pubdate_to_jst(pubdate_text: str):
         dt = dt.replace(tzinfo=ZoneInfo("UTC"))
     return dt.astimezone(JST)
 
+
 def fetch_rss_items(url: str, limit: int = 50):
-    with urllib.request.urlopen(url, timeout=20) as r:
+    with urllib.request.urlopen(url, timeout=30) as r:
         xml_bytes = r.read()
 
     root = ET.fromstring(xml_bytes)
@@ -86,11 +98,13 @@ def fetch_rss_items(url: str, limit: int = 50):
         })
     return items
 
+
 def send_mail_sendgrid(subject: str, body: str):
     api_key = os.environ.get("SENDGRID_API_KEY")
     mail_from = os.environ.get("MAIL_FROM")
     mail_to = os.environ.get("MAIL_TO")
 
+    # Secretsが取れてるか（値は出さない）
     print(
         "ENV CHECK:",
         "SENDGRID_API_KEY=", bool(api_key),
@@ -124,23 +138,24 @@ def send_mail_sendgrid(subject: str, body: str):
 
     try:
         with urllib.request.urlopen(req) as res:
-            print("Email sent:", res.status)  # 202なら成功
+            # 成功すると 202 が返る
+            print("Email sent:", res.status)
     except Exception as e:
         print("Email send failed:", e)
 
+
 def main():
     now_jst = datetime.now(JST)
-    since = now_jst - timedelta(days=180)
+    since = now_jst - timedelta(days=LOOKBACK_DAYS)
 
-    # 前回までに見たURL
     seen = load_seen_links()
 
-    print("=== HR News Bot: last 24 hours (1 mail/day, dedupe by URL) ===")
-    print(f"Now (JST): {now_jst}")
+    print("=== HR News Bot: lookback =", LOOKBACK_DAYS, "days | 1 mail/day | dedupe by URL ===")
+    print(f"Now (JST):   {now_jst}")
     print(f"Since (JST): {since}")
     print(f"Seen links loaded: {len(seen)}")
 
-    # 今回の新規（メール用に溜める）
+    # 今回の新規（メール用）
     new_items_all = []  # [{"company","datetime","title","link"}...]
     new_links = set()   # URLだけ（seen更新用）
 
@@ -151,9 +166,8 @@ def main():
 
         try:
             items = fetch_rss_items(url, limit=50)
-            recent_hr_items = []
 
-            # 直近24h & 人事っぽいものだけ
+            recent_hr_items = []
             for it in items:
                 pub_jst = parse_pubdate_to_jst(it["pubDate"])
                 if not pub_jst:
@@ -166,13 +180,13 @@ def main():
                     recent_hr_items.append((pub_jst, it))
 
             if not recent_hr_items:
-                print("No HR-like results in last 24 hours.")
+                print("No HR-like results in lookback window.")
                 continue
 
             # 新しい順
             recent_hr_items.sort(key=lambda x: x[0], reverse=True)
 
-            # URLで「新規だけ」
+            # URLで新規だけ
             new_items = []
             for d, it in recent_hr_items:
                 link = it.get("link", "")
@@ -180,10 +194,9 @@ def main():
                     new_items.append((d, it))
 
             if not new_items:
-                print("No NEW HR-like results in last 24 hours (deduped).")
+                print("No NEW HR-like results (deduped).")
                 continue
 
-            # ログ表示 & メール用に溜める
             for i, (d, it) in enumerate(new_items, 1):
                 print(f"{i}. [{d.strftime('%Y-%m-%d %H:%M')}] {it['title']}")
                 print(f"   {it['link']}")
@@ -199,20 +212,19 @@ def main():
         except Exception as e:
             print(f"ERROR: {e}")
 
-    # seen_links.txt 更新（新規があった時だけ）
+    # seen_links.txt更新（新規がある時だけ）
     if new_links:
         seen.update(new_links)
         save_seen_links(seen)
 
     print(f"\n[seen_links.txt] added this run = {len(new_links)}, total seen = {len(seen)}")
 
-    # ===== 1日1通まとめでメール送信（新規がある日だけ）=====
+    # 1日1通（新規がある日だけ）
     if new_items_all:
-        # 会社→時刻の順で整形
         new_items_all.sort(key=lambda x: (x["company"], x["datetime"]))
 
         lines = []
-        lines.append("【人事ニュース｜直近24時間（新規）】")
+        lines.append("【人事ニュース｜新規（URL重複除外）】")
         lines.append(f"対象期間: {since.strftime('%Y-%m-%d %H:%M')} ～ {now_jst.strftime('%Y-%m-%d %H:%M')}（JST）")
         lines.append(f"新規: {len(new_items_all)}件")
         lines.append("")
@@ -225,12 +237,13 @@ def main():
             lines.append(f'- [{it["datetime"]}] {it["title"]}')
             lines.append(f'  {it["link"]}')
 
-        subject = f"【人事ニュース】直近24h 新規{len(new_items_all)}件"
+        subject = f"【人事ニュース】過去{LOOKBACK_DAYS}日 新規{len(new_items_all)}件"
         body = "\n".join(lines)
 
         send_mail_sendgrid(subject, body)
     else:
         print("No new items. Email not sent.")
+
 
 if __name__ == "__main__":
     main()
