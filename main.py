@@ -33,7 +33,7 @@ NOISE_KEYWORDS = [
     "新製品", "キャンペーン", "広告", "インタビュー",
 ]
 
-# 前回までに見たURLを保存するファイル（URL単位で重複除外）
+# URL単位で重複除外するための保存ファイル
 SEEN_FILE = Path("seen_links.txt")
 MAX_SEEN = 5000  # 半年に広げると増えるので少し多め
 
@@ -56,7 +56,6 @@ def save_seen_links(seen: set[str]):
 
 
 def google_news_rss_url(company: str) -> str:
-    # 人事系に寄せた検索（日本語＋英語）
     query = (
         f'("{company}") ('
         f'人事 OR 異動 OR 就任 OR 退任 OR 昇進 OR 新任 OR 任命 OR 発令 '
@@ -100,11 +99,12 @@ def fetch_rss_items(url: str, limit: int = 50):
 
 
 def send_mail_sendgrid(subject: str, body: str):
+    # run.yml 側で env に渡している前提（ここで読む）
     api_key = os.environ.get("SENDGRID_API_KEY")
     mail_from = os.environ.get("MAIL_FROM")
     mail_to = os.environ.get("MAIL_TO")
 
-    # Secretsが取れてるか（値は出さない）
+    # True/Falseだけ出す（値は出さない）
     print(
         "ENV CHECK:",
         "SENDGRID_API_KEY=", bool(api_key),
@@ -138,8 +138,7 @@ def send_mail_sendgrid(subject: str, body: str):
 
     try:
         with urllib.request.urlopen(req) as res:
-            # 成功すると 202 が返る
-            print("Email sent:", res.status)
+            print("Email sent:", res.status)  # 202なら成功
     except Exception as e:
         print("Email send failed:", e)
 
@@ -150,14 +149,14 @@ def main():
 
     seen = load_seen_links()
 
-    print("=== HR News Bot: lookback =", LOOKBACK_DAYS, "days | 1 mail/day | dedupe by URL ===")
+    print("=== HR News Bot ===")
+    print(f"Lookback days: {LOOKBACK_DAYS}")
     print(f"Now (JST):   {now_jst}")
     print(f"Since (JST): {since}")
     print(f"Seen links loaded: {len(seen)}")
 
-    # 今回の新規（メール用）
-    new_items_all = []  # [{"company","datetime","title","link"}...]
-    new_links = set()   # URLだけ（seen更新用）
+    new_items_all = []  # メール用：記事詳細
+    new_links = set()   # seen更新用：URLだけ
 
     for company in COMPANIES:
         url = google_news_rss_url(company)
@@ -167,7 +166,7 @@ def main():
         try:
             items = fetch_rss_items(url, limit=50)
 
-            recent_hr_items = []
+            filtered = []
             for it in items:
                 pub_jst = parse_pubdate_to_jst(it["pubDate"])
                 if not pub_jst:
@@ -177,18 +176,18 @@ def main():
 
                 text = it["title"] + " " + it["description"]
                 if is_hr_text(text):
-                    recent_hr_items.append((pub_jst, it))
+                    filtered.append((pub_jst, it))
 
-            if not recent_hr_items:
+            if not filtered:
                 print("No HR-like results in lookback window.")
                 continue
 
             # 新しい順
-            recent_hr_items.sort(key=lambda x: x[0], reverse=True)
+            filtered.sort(key=lambda x: x[0], reverse=True)
 
-            # URLで新規だけ
+            # URLで「新規だけ」
             new_items = []
-            for d, it in recent_hr_items:
+            for d, it in filtered:
                 link = it.get("link", "")
                 if link and (link not in seen) and (link not in new_links):
                     new_items.append((d, it))
@@ -210,9 +209,9 @@ def main():
                 new_links.add(it["link"])
 
         except Exception as e:
-            print(f"ERROR: {e}")
+            print("ERROR:", e)
 
-    # seen_links.txt更新（新規がある時だけ）
+    # seen更新（新規があった時だけ）
     if new_links:
         seen.update(new_links)
         save_seen_links(seen)
