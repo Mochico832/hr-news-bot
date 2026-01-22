@@ -91,10 +91,12 @@ def send_mail_sendgrid(subject: str, body: str):
     mail_from = os.environ.get("MAIL_FROM")
     mail_to = os.environ.get("MAIL_TO")
 
-print("ENV CHECK:",
-      "SENDGRID_API_KEY=", bool(os.environ.get("SENDGRID_API_KEY")),
-      "MAIL_FROM=", bool(os.environ.get("MAIL_FROM")),
-      "MAIL_TO=", bool(os.environ.get("MAIL_TO")))
+    print(
+        "ENV CHECK:",
+        "SENDGRID_API_KEY=", bool(api_key),
+        "MAIL_FROM=", bool(mail_from),
+        "MAIL_TO=", bool(mail_to),
+    )
 
     if not api_key or not mail_from or not mail_to:
         print("SendGrid secrets are missing. Skip sending email.")
@@ -122,8 +124,7 @@ print("ENV CHECK:",
 
     try:
         with urllib.request.urlopen(req) as res:
-            # 成功すると 202 が返る
-            print("Email sent:", res.status)
+            print("Email sent:", res.status)  # 202なら成功
     except Exception as e:
         print("Email send failed:", e)
 
