@@ -35,10 +35,10 @@ NOISE_KEYWORDS = [
 
 # URL単位で重複除外するための保存ファイル
 SEEN_FILE = Path("seen_links.txt")
-MAX_SEEN = 5000  # 半年に広げると増えるので少し多め
+MAX_SEEN = 5000  # 運用しやすいよう少し多め
 
-# 検索期間：半年（180日）
-LOOKBACK_DAYS = 180
+# 検索期間：直近24時間
+LOOKBACK_HOURS = 24
 
 
 def load_seen_links() -> set[str]:
@@ -145,12 +145,12 @@ def send_mail_sendgrid(subject: str, body: str):
 
 def main():
     now_jst = datetime.now(JST)
-    since = now_jst - timedelta(days=LOOKBACK_DAYS)
+    since = now_jst - timedelta(hours=LOOKBACK_HOURS)
 
     seen = load_seen_links()
 
     print("=== HR News Bot ===")
-    print(f"Lookback days: {LOOKBACK_DAYS}")
+    print(f"Lookback hours: {LOOKBACK_HOURS}")
     print(f"Now (JST):   {now_jst}")
     print(f"Since (JST): {since}")
     print(f"Seen links loaded: {len(seen)}")
@@ -236,7 +236,7 @@ def main():
             lines.append(f'- [{it["datetime"]}] {it["title"]}')
             lines.append(f'  {it["link"]}')
 
-        subject = f"【人事ニュース】過去{LOOKBACK_DAYS}日 新規{len(new_items_all)}件"
+        subject = f"【人事ニュース】直近{LOOKBACK_HOURS}h 新規{len(new_items_all)}件"
         body = "\n".join(lines)
 
         send_mail_sendgrid(subject, body)
