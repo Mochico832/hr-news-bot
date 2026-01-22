@@ -21,6 +21,10 @@ jobs:
           python-version: "3.11"
 
       - name: Run script
+        env:
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
         run: python main.py
 
       - name: Commit seen_links.txt if changed
