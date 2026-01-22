@@ -1,3 +1,5 @@
+import os
+import json
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -8,7 +10,7 @@ from pathlib import Path
 
 JST = ZoneInfo("Asia/Tokyo")
 
-# 監視したい会社名
+# ===== 監視したい会社名（ここだけ将来いじる）=====
 COMPANIES = [
     "artience",
     "DIC",
@@ -29,7 +31,7 @@ NOISE_KEYWORDS = [
     "キャンペーン", "広告", "インタビュー",
 ]
 
-# 前回までに見たURLを保存するファイル
+# 前回までに見たURLを保存するファイル（URL単位で重複除外）
 SEEN_FILE = Path("seen_links.txt")
 MAX_SEEN = 2000  # 記憶が増えすぎないよう上限
 
@@ -84,20 +86,57 @@ def fetch_rss_items(url: str, limit: int = 50):
         })
     return items
 
+def send_mail_sendgrid(subject: str, body: str):
+    api_key = os.environ.get("SENDGRID_API_KEY")
+    mail_from = os.environ.get("MAIL_FROM")
+    mail_to = os.environ.get("MAIL_TO")
+
+    if not api_key or not mail_from or not mail_to:
+        print("SendGrid secrets are missing. Skip sending email.")
+        return
+
+    payload = {
+        "personalizations": [
+            {"to": [{"email": addr.strip()} for addr in mail_to.split(",") if addr.strip()]}
+        ],
+        "from": {"email": mail_from, "name": "HR News Bot"},
+        "subject": subject,
+        "content": [{"type": "text/plain", "value": body}],
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.sendgrid.com/v3/mail/send",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req) as res:
+            # 成功すると 202 が返る
+            print("Email sent:", res.status)
+    except Exception as e:
+        print("Email send failed:", e)
+
 def main():
     now_jst = datetime.now(JST)
     since = now_jst - timedelta(hours=24)
 
-    # 前回までに見たURLを読み込み
+    # 前回までに見たURL
     seen = load_seen_links()
 
-    print("=== HR News Bot: last 24 hours (dedupe by URL) ===")
+    print("=== HR News Bot: last 24 hours (1 mail/day, dedupe by URL) ===")
     print(f"Now (JST): {now_jst}")
     print(f"Since (JST): {since}")
     print(f"Seen links loaded: {len(seen)}")
 
-    # 今回新たに追加したURL（最後にまとめて保存）
-    newly_seen = set()
+    # 今回の新規（メール用に溜める）
+    new_items_all = []  # [{"company","datetime","title","link"}...]
+    new_links = set()   # URLだけ（seen更新用）
 
     for company in COMPANIES:
         url = google_news_rss_url(company)
@@ -108,6 +147,7 @@ def main():
             items = fetch_rss_items(url, limit=50)
             recent_hr_items = []
 
+            # 直近24h & 人事っぽいものだけ
             for it in items:
                 pub_jst = parse_pubdate_to_jst(it["pubDate"])
                 if not pub_jst:
@@ -126,31 +166,65 @@ def main():
             # 新しい順
             recent_hr_items.sort(key=lambda x: x[0], reverse=True)
 
-            # URLで「新規だけ」に絞る
+            # URLで「新規だけ」
             new_items = []
             for d, it in recent_hr_items:
                 link = it.get("link", "")
-                if link and (link not in seen) and (link not in newly_seen):
+                if link and (link not in seen) and (link not in new_links):
                     new_items.append((d, it))
 
             if not new_items:
                 print("No NEW HR-like results in last 24 hours (deduped).")
                 continue
 
+            # ログ表示 & メール用に溜める
             for i, (d, it) in enumerate(new_items, 1):
                 print(f"{i}. [{d.strftime('%Y-%m-%d %H:%M')}] {it['title']}")
                 print(f"   {it['link']}")
-                newly_seen.add(it["link"])
+
+                new_items_all.append({
+                    "company": company,
+                    "datetime": d.strftime('%Y-%m-%d %H:%M'),
+                    "title": it["title"],
+                    "link": it["link"],
+                })
+                new_links.add(it["link"])
 
         except Exception as e:
             print(f"ERROR: {e}")
 
-    # 見たURLを保存（次回以降に除外される）
-    if newly_seen:
-        seen.update(newly_seen)
+    # seen_links.txt 更新（新規があった時だけ）
+    if new_links:
+        seen.update(new_links)
         save_seen_links(seen)
 
-    print(f"\n[seen_links.txt] added this run = {len(newly_seen)}, total seen = {len(seen)}")
+    print(f"\n[seen_links.txt] added this run = {len(new_links)}, total seen = {len(seen)}")
+
+    # ===== 1日1通まとめでメール送信（新規がある日だけ）=====
+    if new_items_all:
+        # 会社→時刻の順で整形
+        new_items_all.sort(key=lambda x: (x["company"], x["datetime"]))
+
+        lines = []
+        lines.append("【人事ニュース｜直近24時間（新規）】")
+        lines.append(f"対象期間: {since.strftime('%Y-%m-%d %H:%M')} ～ {now_jst.strftime('%Y-%m-%d %H:%M')}（JST）")
+        lines.append(f"新規: {len(new_items_all)}件")
+        lines.append("")
+
+        current_company = None
+        for it in new_items_all:
+            if it["company"] != current_company:
+                current_company = it["company"]
+                lines.append(f"\n=== {current_company} ===")
+            lines.append(f'- [{it["datetime"]}] {it["title"]}')
+            lines.append(f'  {it["link"]}')
+
+        subject = f"【人事ニュース】直近24h 新規{len(new_items_all)}件"
+        body = "\n".join(lines)
+
+        send_mail_sendgrid(subject, body)
+    else:
+        print("No new items. Email not sent.")
 
 if __name__ == "__main__":
     main()
